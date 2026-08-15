@@ -11,7 +11,7 @@ env:
   # Adjust to match whatever gtk-osx-setup.sh actually uses on your machine.
   # Default gtk-osx install prefix is ~/.new_local ; source checkouts go to ~/gtk.
   JHBUILD_PREFIX: ${{ github.workspace }}/../.new_local
-  BLUEFISH_VERSION: "2.4.2"
+  BLUEFISH_VERSION: "2.4.3a1"
 
 jobs:
   build-arm64:
@@ -54,6 +54,10 @@ jobs:
           # hanging on an unanswerable prompt.
           script -q /dev/null jhbuild --no-interact bootstrap-gtk-osx
 
+      - name: Install XML::Parser Perl module (required by intltool)
+        run: |
+          brew install perl-xml-parser || sudo cpan -T XML::Parser
+
       - name: Build core GTK3 stack
         run: |
           export PATH=~/.new_local/bin/:$PATH
@@ -77,7 +81,7 @@ jobs:
       - name: Fetch Bluefish source
         run: |
           curl -L -o bluefish-${BLUEFISH_VERSION}.tar.bz2 \
-            "https://download.savannah.nongnu.org/releases/bluefish/bluefish-${BLUEFISH_VERSION}.tar.bz2"
+            "https://www.bennewitz.com/bluefish/devel/source/bluefish-${BLUEFISH_VERSION}.tar.bz2"
           tar -xjf bluefish-${BLUEFISH_VERSION}.tar.bz2
 
       - name: Build Bluefish (arm64)
