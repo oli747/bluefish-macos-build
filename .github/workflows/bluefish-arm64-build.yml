@@ -12,6 +12,10 @@ env:
   # Default gtk-osx install prefix is ~/.new_local ; source checkouts go to ~/gtk.
   JHBUILD_PREFIX: ${{ github.workspace }}/../.new_local
   BLUEFISH_VERSION: "2.4.3a1"
+  # Bump this ONLY when the jhbuild module list, bootstrap steps, or anything
+  # affecting the GTK build itself changes. Unrelated edits (retry logic,
+  # source URLs, etc.) should NOT bump this, so the GTK cache stays warm.
+  CACHE_MODULES_VERSION: "1"
 
 jobs:
   build-arm64:
@@ -33,11 +37,13 @@ jobs:
             ~/.config/jhbuildrc
             ~/.config/jhbuildrc-custom
             ~/.cargo
-          # Bump the version suffix any time you change the module list below,
-          # so a stale cache doesn't silently skip new modules.
-          key: jhbuild-gtkosx-arm64-v1-${{ runner.os }}-${{ hashFiles('.github/workflows/bluefish-arm64-build.yml') }}
+          # Keyed on a manually-bumped version number, NOT the whole workflow
+          # file hash — that way edits to unrelated steps (retry logic, source
+          # URLs, etc.) don't invalidate this cache. Bump CACHE_MODULES_VERSION
+          # below only when the actual module list changes.
+          key: jhbuild-gtkosx-arm64-v${{ env.CACHE_MODULES_VERSION }}-${{ runner.os }}
           restore-keys: |
-            jhbuild-gtkosx-arm64-v1-${{ runner.os }}-
+            jhbuild-gtkosx-arm64-v${{ env.CACHE_MODULES_VERSION }}-${{ runner.os }}
 
       - name: Fetch gtk-osx-setup.sh
         run: curl -L https://gitlab.gnome.org/GNOME/gtk-osx/raw/master/gtk-osx-setup.sh -o gtk-osx-setup.sh
@@ -93,7 +99,8 @@ jobs:
 
       - name: Fetch Bluefish source
         run: |
-          curl -L -o bluefish-${BLUEFISH_VERSION}.tar.bz2 \
+          curl -f -L --retry 6 --retry-delay 10 --retry-all-errors \
+            -o bluefish-${BLUEFISH_VERSION}.tar.bz2 \
             "https://www.bennewitz.com/bluefish/devel/source/bluefish-${BLUEFISH_VERSION}.tar.bz2"
           tar -xjf bluefish-${BLUEFISH_VERSION}.tar.bz2
 
