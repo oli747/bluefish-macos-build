@@ -1,0 +1,102 @@
+name: Build Bluefish (arm64, gtk-osx/jhbuild)
+
+on:
+  workflow_dispatch:
+  # Uncomment to also run on pushes that touch build config:
+  # push:
+  #   paths:
+  #     - '.github/workflows/bluefish-arm64-build.yml'
+
+env:
+  # Adjust to match whatever gtk-osx-setup.sh actually uses on your machine.
+  # Default gtk-osx install prefix is ~/.new_local ; source checkouts go to ~/gtk.
+  JHBUILD_PREFIX: ${{ github.workspace }}/../.new_local
+  BLUEFISH_VERSION: "2.4.3a1"
+
+jobs:
+  build-arm64:
+    runs-on: macos-14   # Apple Silicon (arm64) runner
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout (optional, only if you keep patches/scripts in a repo)
+        uses: actions/checkout@v4
+
+      - name: Cache jhbuild sources, build dir, and install prefix
+        id: jhbuild-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/jhbuild
+            ~/gtk
+            ~/.new_local
+            ~/.config/jhbuildrc
+            ~/.config/jhbuildrc-custom
+          # Bump the version suffix any time you change the module list below,
+          # so a stale cache doesn't silently skip new modules.
+          key: jhbuild-gtkosx-arm64-v1-${{ runner.os }}-${{ hashFiles('.github/workflows/bluefish-arm64-build.yml') }}
+          restore-keys: |
+            jhbuild-gtkosx-arm64-v1-${{ runner.os }}-
+
+      - name: Fetch gtk-osx-setup.sh
+        run: curl -L https://gitlab.gnome.org/GNOME/gtk-osx/raw/master/gtk-osx-setup.sh -o gtk-osx-setup.sh
+
+      - name: Run gtk-osx-setup.sh
+        run: |
+          chmod +x gtk-osx-setup.sh
+          ./gtk-osx-setup.sh
+
+      - name: Bootstrap gtk-osx (skips already-built modules on cache hit)
+        run: |
+          export PATH=~/.new_local/bin/:$PATH
+          jhbuild bootstrap-gtk-osx
+
+      - name: Build core GTK3 stack
+        run: |
+          export PATH=~/.new_local/bin/:$PATH
+          jhbuild build meta-gtk-osx-bootstrap meta-gtk-osx-python3 meta-gtk-osx-gtk3 shared-mime-info enchant
+
+      - name: Install gtk-mac-bundler
+        run: |
+          export PATH=~/.new_local/bin/:$PATH
+          git clone https://gitlab.gnome.org/GNOME/gtk-mac-bundler.git
+          cd gtk-mac-bundler
+          jhbuild run make install
+
+      - name: Fetch Bluefish source
+        run: |
+          curl -L -o bluefish-${BLUEFISH_VERSION}.tar.bz2 \
+          	"https://www.bennewitz.com/bluefish/devel/source/bluefish-${BLUEFISH_VERSION}.tar.bz2"
+          tar -xjf bluefish-${BLUEFISH_VERSION}.tar.bz2
+
+      - name: Build Bluefish (arm64)
+        run: |
+          export PATH=~/.new_local/bin/:$PATH
+          cd bluefish-${BLUEFISH_VERSION}
+          jhbuild run make -j$(sysctl -n hw.ncpu) -f Makefile.osxapp
+
+      - name: Locate build output
+        id: locate
+        run: |
+          find bluefish-${BLUEFISH_VERSION} -maxdepth 3 -iname "*.app" -o -iname "*.dmg"
+          echo "Adjust the upload path below to match what Makefile.osxapp actually produced."
+
+      # Option 1: upload just the finished .app (do the lipo merge yourself locally)
+      - name: Upload built Bluefish.app
+        uses: actions/upload-artifact@v4
+        with:
+          name: bluefish-arm64-app
+          path: bluefish-${{ env.BLUEFISH_VERSION }}/**/*.app
+          if-no-files-found: warn
+          retention-days: 14
+
+      # Option 2 (alternative/additional): upload the whole jhbuild install prefix,
+      # so you can lipo-merge library-by-library against your Intel prefix instead
+      # of relying only on the final .app.
+      - name: Upload jhbuild arm64 prefix
+        uses: actions/upload-artifact@v4
+        with:
+          name: jhbuild-prefix-arm64
+          path: ~/.new_local
+          if-no-files-found: warn
+          retention-days: 14
