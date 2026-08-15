@@ -32,6 +32,7 @@ jobs:
             ~/.new_local
             ~/.config/jhbuildrc
             ~/.config/jhbuildrc-custom
+            ~/.cargo
           # Bump the version suffix any time you change the module list below,
           # so a stale cache doesn't silently skip new modules.
           key: jhbuild-gtkosx-arm64-v1-${{ runner.os }}-${{ hashFiles('.github/workflows/bluefish-arm64-build.yml') }}
@@ -58,9 +59,14 @@ jobs:
           # hanging on an unanswerable prompt.
           script -q /dev/null jhbuild --no-interact bootstrap-gtk-osx
 
+      - name: Install cargo-c (required by librsvg's meson build)
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cargo install cargo-c --locked
+
       - name: Build core GTK3 stack
         run: |
-          export PATH=~/.new_local/bin/:$PATH
+          export PATH="$HOME/.new_local/bin:$HOME/.cargo/bin:$PATH"
           script -q /dev/null jhbuild --no-interact build meta-gtk-osx-bootstrap meta-gtk-osx-python3 meta-gtk-osx-gtk3 shared-mime-info enchant
 
       - name: On failure, dump config.log / build logs for the failed module
