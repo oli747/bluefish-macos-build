@@ -110,18 +110,29 @@ jobs:
           cd bluefish-${BLUEFISH_VERSION}
           script -q /dev/null jhbuild --no-interact run make -j$(sysctl -n hw.ncpu) -f Makefile.osxapp
 
-      - name: Locate build output
+      - name: Locate and stage build output
         id: locate
         run: |
-          find bluefish-${BLUEFISH_VERSION} -maxdepth 3 -iname "*.app" -o -iname "*.dmg"
-          echo "Adjust the upload path below to match what Makefile.osxapp actually produced."
+          mkdir -p /tmp/bluefish-app-staging
+          echo "----- Searching common locations for Bluefish.app -----"
+          FOUND=$(find "$HOME/Desktop" "$HOME" -maxdepth 4 \( -iname "Bluefish.app" -o -iname "*.dmg" \) 2>/dev/null | grep -v '/gtk/source' | head -n 5)
+          echo "$FOUND"
+          if [ -z "$FOUND" ]; then
+            echo "::warning::No Bluefish.app or .dmg found under \$HOME/Desktop or \$HOME. Check the build log above for where Makefile.osxapp actually placed it."
+          else
+            echo "$FOUND" | while read -r f; do
+              echo "Staging: $f"
+              cp -R "$f" /tmp/bluefish-app-staging/
+            done
+          fi
+          ls -la /tmp/bluefish-app-staging
 
       # Option 1: upload just the finished .app (do the lipo merge yourself locally)
       - name: Upload built Bluefish.app
         uses: actions/upload-artifact@v4
         with:
           name: bluefish-arm64-app
-          path: bluefish-${{ env.BLUEFISH_VERSION }}/**/*.app
+          path: /tmp/bluefish-app-staging/*
           if-no-files-found: warn
           retention-days: 14
 
