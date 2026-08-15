@@ -64,6 +64,13 @@ jobs:
           export PATH="$HOME/.cargo/bin:$PATH"
           cargo install cargo-c --locked
 
+      - name: Pre-fetch shared-mime-info tarball (with retry, upstream GitLab is flaky)
+        run: |
+          mkdir -p ~/gtk/source/pkgs
+          curl -f -L --retry 6 --retry-delay 10 --retry-all-errors \
+            -o ~/gtk/source/pkgs/shared-mime-info-2.4.tar.bz2 \
+            "https://gitlab.freedesktop.org/xdg/shared-mime-info/-/archive/2.4/shared-mime-info-2.4.tar.bz2"
+
       - name: Build core GTK3 stack
         run: |
           export PATH="$HOME/.new_local/bin:$HOME/.cargo/bin:$PATH"
