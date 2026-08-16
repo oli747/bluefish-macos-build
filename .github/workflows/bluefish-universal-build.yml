@@ -20,9 +20,9 @@ jobs:
       fail-fast: false   # let both arches finish even if one fails, so you see both logs
       matrix:
         include:
-          - runner: macos-13   # Intel (x86_64)
+          - runner: macos-15-intel   # Intel (x86_64)
             arch_label: x86_64
-          - runner: macos-14   # Apple Silicon (arm64)
+          - runner: macos-15   # Apple Silicon (arm64)
             arch_label: arm64
 
     runs-on: ${{ matrix.runner }}
@@ -146,7 +146,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: jhbuild-prefix-${{ matrix.arch_label }}
-          path: ~/.new_local
+          path: ~/gtk
           if-no-files-found: warn
           retention-days: 14
 
@@ -218,12 +218,12 @@ jobs:
             lipo -info "$MAIN_BIN"
           fi
 
-      - name: Ad-hoc codesign (local testing only — not for distribution)
-        run: |
-          codesign --force --deep --sign - "Bluefish-universal.app" || \
-            echo "::warning::Ad-hoc codesign reported issues — see log above"
-          codesign --verify --deep --strict "Bluefish-universal.app" || \
-            echo "::warning::codesign --verify reported issues"
+#      - name: Ad-hoc codesign (local testing only — not for distribution)
+#        run: |
+#          codesign --force --deep --sign - "Bluefish-universal.app" || \
+#            echo "::warning::Ad-hoc codesign reported issues — see log above"
+#          codesign --verify --deep --strict "Bluefish-universal.app" || \
+#            echo "::warning::codesign --verify reported issues"
 
       - name: Zip the universal app (preserves resource forks/metadata)
         run: ditto -c -k --sequesterRsrc --keepParent "Bluefish-universal.app" Bluefish-universal.zip
