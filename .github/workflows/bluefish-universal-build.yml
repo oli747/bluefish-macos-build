@@ -1,0 +1,237 @@
+name: Build Bluefish (universal, gtk-osx/jhbuild)
+
+on:
+  workflow_dispatch:
+  # Uncomment to also run on pushes that touch build config:
+  # push:
+  #   paths:
+  #     - '.github/workflows/bluefish-arm64-build.yml'
+
+env:
+  BLUEFISH_VERSION: "2.4.3a1"
+  # Bump this ONLY when the jhbuild module list, bootstrap steps, or anything
+  # affecting the GTK build itself changes. Unrelated edits (retry logic,
+  # source URLs, etc.) should NOT bump this, so the GTK cache stays warm.
+  CACHE_MODULES_VERSION: "1"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false   # let both arches finish even if one fails, so you see both logs
+      matrix:
+        include:
+          - runner: macos-13   # Intel (x86_64)
+            arch_label: x86_64
+          - runner: macos-14   # Apple Silicon (arm64)
+            arch_label: arm64
+
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout (optional, only if you keep patches/scripts in a repo)
+        uses: actions/checkout@v4
+
+      - name: Cache jhbuild sources, build dir, and install prefix
+        id: jhbuild-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/jhbuild
+            ~/gtk
+            ~/.new_local
+            ~/.config/jhbuildrc
+            ~/.config/jhbuildrc-custom
+            ~/.cargo
+          # Arch is part of the key — x86_64 and arm64 build trees are not
+          # interchangeable and must never share a cache entry.
+          key: jhbuild-gtkosx-v${{ env.CACHE_MODULES_VERSION }}-${{ matrix.arch_label }}
+          restore-keys: |
+            jhbuild-gtkosx-v${{ env.CACHE_MODULES_VERSION }}-${{ matrix.arch_label }}
+
+      - name: Fetch gtk-osx-setup.sh
+        run: curl -L https://gitlab.gnome.org/GNOME/gtk-osx/raw/master/gtk-osx-setup.sh -o gtk-osx-setup.sh
+
+      - name: Run gtk-osx-setup.sh
+        run: |
+          chmod +x gtk-osx-setup.sh
+          ./gtk-osx-setup.sh
+
+      - name: Install XML::Parser Perl module (required by intltool, built during bootstrap)
+        run: |
+          brew install perl-xml-parser || sudo cpan -T XML::Parser
+
+      - name: Bootstrap gtk-osx (skips already-built modules on cache hit)
+        run: |
+          export PATH=~/.new_local/bin/:$PATH
+          # `script` fakes a pty so jhbuild/autoconf line-buffer instead of
+          # fully-buffering, and --no-interact makes it fail instead of
+          # hanging on an unanswerable prompt.
+          script -q /dev/null jhbuild --no-interact bootstrap-gtk-osx
+
+      - name: Install cargo-c (required by librsvg's meson build)
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cargo install cargo-c --locked
+
+      - name: Pre-fetch shared-mime-info tarball (with retry, upstream GitLab is flaky)
+        run: |
+          mkdir -p ~/gtk/source/pkgs
+          curl -f -L --retry 6 --retry-delay 10 --retry-all-errors \
+            -o ~/gtk/source/pkgs/shared-mime-info-2.4.tar.bz2 \
+            "https://gitlab.freedesktop.org/xdg/shared-mime-info/-/archive/2.4/shared-mime-info-2.4.tar.bz2"
+
+      - name: Build core GTK3 stack
+        run: |
+          export PATH="$HOME/.new_local/bin:$HOME/.cargo/bin:$PATH"
+          script -q /dev/null jhbuild --no-interact build meta-gtk-osx-bootstrap meta-gtk-osx-python3 meta-gtk-osx-gtk3 shared-mime-info enchant
+
+      - name: On failure, dump config.log / build logs for the failed module
+        if: failure()
+        run: |
+          echo "----- Searching for config.log files under ~/gtk/source -----"
+          find ~/gtk/source -maxdepth 2 -name "config.log" -print -exec echo "===== {} =====" \; -exec cat {} \; 2>/dev/null || true
+          echo "----- jhbuild buildlogs, if any -----"
+          find ~/.cache/jhbuild -iname "*.log" -newer ~/gtk-osx-setup.sh -print -exec echo "===== {} =====" \; -exec tail -n 200 {} \; 2>/dev/null || true
+
+      - name: Install gtk-mac-bundler
+        run: |
+          export PATH=~/.new_local/bin/:$PATH
+          git clone https://gitlab.gnome.org/GNOME/gtk-mac-bundler.git
+          cd gtk-mac-bundler
+          script -q /dev/null jhbuild --no-interact run make install
+
+      - name: Fetch Bluefish source
+        run: |
+          curl -f -L --retry 6 --retry-delay 10 --retry-all-errors \
+            -o bluefish-${BLUEFISH_VERSION}.tar.bz2 \
+            "https://www.bennewitz.com/bluefish/devel/source/bluefish-${BLUEFISH_VERSION}.tar.bz2"
+          tar -xjf bluefish-${BLUEFISH_VERSION}.tar.bz2
+
+      - name: Build Bluefish (${{ matrix.arch_label }})
+        run: |
+          export PATH=~/.new_local/bin/:$PATH
+          cd bluefish-${BLUEFISH_VERSION}
+          script -q /dev/null jhbuild --no-interact run make -j$(sysctl -n hw.ncpu) -f Makefile.osxapp
+
+      - name: Locate and stage build output
+        id: locate
+        run: |
+          mkdir -p /tmp/bluefish-app-staging
+          echo "----- Searching common locations for Bluefish.app -----"
+          FOUND=$(find "$HOME/Desktop" "$HOME" -maxdepth 4 \( -iname "Bluefish.app" -o -iname "*.dmg" \) 2>/dev/null | grep -v '/gtk/source' | head -n 5)
+          echo "$FOUND"
+          if [ -z "$FOUND" ]; then
+            echo "::warning::No Bluefish.app or .dmg found under \$HOME/Desktop or \$HOME. Check the build log above for where Makefile.osxapp actually placed it."
+          else
+            echo "$FOUND" | while read -r f; do
+              echo "Staging: $f"
+              cp -R "$f" /tmp/bluefish-app-staging/
+            done
+          fi
+          ls -la /tmp/bluefish-app-staging
+
+      - name: Upload built Bluefish.app (${{ matrix.arch_label }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: bluefish-${{ matrix.arch_label }}-app
+          path: /tmp/bluefish-app-staging/*
+          if-no-files-found: warn
+          retention-days: 14
+
+      # Optional: also upload the whole jhbuild install prefix for this arch,
+      # useful if you ever want to lipo-merge library-by-library yourself
+      # instead of relying only on the final .app.
+      - name: Upload jhbuild prefix (${{ matrix.arch_label }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: jhbuild-prefix-${{ matrix.arch_label }}
+          path: ~/.new_local
+          if-no-files-found: warn
+          retention-days: 14
+
+  merge-universal:
+    needs: build
+    runs-on: macos-14   # any macOS runner works — lipo/codesign are arch-independent tools
+    timeout-minutes: 30
+
+    steps:
+      - name: Download x86_64 build
+        uses: actions/download-artifact@v4
+        with:
+          name: bluefish-x86_64-app
+          path: x86_64
+
+      - name: Download arm64 build
+        uses: actions/download-artifact@v4
+        with:
+          name: bluefish-arm64-app
+          path: arm64
+
+      - name: Merge into a universal Bluefish.app
+        run: |
+          set -euo pipefail
+
+          X86_APP=$(find x86_64 -iname "Bluefish.app" -maxdepth 3 | head -n1)
+          ARM_APP=$(find arm64 -iname "Bluefish.app" -maxdepth 3 | head -n1)
+
+          if [ -z "$X86_APP" ] || [ -z "$ARM_APP" ]; then
+            echo "::error::Could not find Bluefish.app in one or both downloaded artifacts."
+            echo "x86_64 artifact contents:"; find x86_64 -maxdepth 4
+            echo "arm64 artifact contents:"; find arm64 -maxdepth 4
+            exit 1
+          fi
+          echo "x86_64 app: $X86_APP"
+          echo "arm64 app:  $ARM_APP"
+
+          UNIVERSAL_APP="Bluefish-universal.app"
+          rm -rf "$UNIVERSAL_APP"
+          # Start from the x86_64 tree as the base structure (symlinks, plists,
+          # resources, etc.), then overwrite every Mach-O file with a lipo'd
+          # merge of both arches.
+          cp -R "$X86_APP" "$UNIVERSAL_APP"
+
+          MERGED=0
+          MISSING_ARM=0
+          find "$X86_APP" -type f | while IFS= read -r f; do
+            rel="${f#"$X86_APP"/}"
+            arm_counterpart="$ARM_APP/$rel"
+            dest="$UNIVERSAL_APP/$rel"
+            if file "$f" | grep -q "Mach-O"; then
+              if [ -f "$arm_counterpart" ]; then
+                mkdir -p "$(dirname "$dest")"
+                if lipo -create "$f" "$arm_counterpart" -output "$dest" 2>/tmp/lipo_err.log; then
+                  echo "lipo merged: $rel"
+                else
+                  echo "::warning::lipo failed for $rel ($(cat /tmp/lipo_err.log)); keeping x86_64-only copy"
+                  cp "$f" "$dest"
+                fi
+              else
+                echo "::warning::No arm64 counterpart for Mach-O file: $rel — keeping x86_64-only"
+              fi
+            fi
+          done
+
+          echo "----- Verifying architectures in the merged app -----"
+          MAIN_BIN=$(find "$UNIVERSAL_APP/Contents/MacOS" -type f -maxdepth 1 | head -n1)
+          if [ -n "$MAIN_BIN" ]; then
+            lipo -info "$MAIN_BIN"
+          fi
+
+      - name: Ad-hoc codesign (local testing only — not for distribution)
+        run: |
+          codesign --force --deep --sign - "Bluefish-universal.app" || \
+            echo "::warning::Ad-hoc codesign reported issues — see log above"
+          codesign --verify --deep --strict "Bluefish-universal.app" || \
+            echo "::warning::codesign --verify reported issues"
+
+      - name: Zip the universal app (preserves resource forks/metadata)
+        run: ditto -c -k --sequesterRsrc --keepParent "Bluefish-universal.app" Bluefish-universal.zip
+
+      - name: Upload universal Bluefish.app
+        uses: actions/upload-artifact@v4
+        with:
+          name: bluefish-universal-app
+          path: Bluefish-universal.zip
+          if-no-files-found: error
+          retention-days: 14
